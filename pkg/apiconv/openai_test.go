@@ -247,6 +247,14 @@ func TestApproxTokens(t *testing.T) {
 	if got := ApproxTokens("abcdefgh"); got != 2 {
 		t.Errorf("ApproxTokens(8 chars) = %d, want 2", got)
 	}
+	if got := ApproxTokens(""); got != 0 {
+		t.Errorf("ApproxTokens(empty) = %d, want 0", got)
+	}
+	// Short replies must not round down to zero: a gateway that bills on
+	// output_tokens would record no usage for every "OK"-sized answer.
+	if got := ApproxTokens("OK"); got != 1 {
+		t.Errorf("ApproxTokens(\"OK\") = %d, want 1", got)
+	}
 }
 
 func TestParseToolChoice(t *testing.T) {

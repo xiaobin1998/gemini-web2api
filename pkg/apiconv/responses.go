@@ -105,6 +105,18 @@ func ResponseCreated(rid, model string) any {
 	}
 }
 
+// ResponseInProgress builds the response.in_progress event payload. Clients that
+// track response state expect it between response.created and the first item.
+func ResponseInProgress(rid, model string) any {
+	return responseEnvelope{
+		Type: "response.in_progress",
+		Response: responseObject{
+			ID: rid, Object: "response", Status: "in_progress",
+			Model: model, Output: []respOutputItem{},
+		},
+	}
+}
+
 // ResponseFunctionCallDone builds a response.function_call_arguments.done event
 // payload for a single tool call.
 func ResponseFunctionCallDone(tc ToolCall) any {
@@ -115,11 +127,80 @@ func ResponseFunctionCallDone(tc ToolCall) any {
 	}
 }
 
+// ResponseOutputItemAdded builds a response.output_item.added event. Streaming
+// clients allocate an output slot from this event; deltas that arrive without a
+// preceding added event for their output_index are discarded.
+func ResponseOutputItemAdded(outputIndex int, item respOutputItem) any {
+	return outputItemEvent{
+		Type: "response.output_item.added", OutputIndex: outputIndex, Item: item,
+	}
+}
+
+// ResponseOutputItemDone builds a response.output_item.done event, closing the
+// slot opened by ResponseOutputItemAdded.
+func ResponseOutputItemDone(outputIndex int, item respOutputItem) any {
+	return outputItemEvent{
+		Type: "response.output_item.done", OutputIndex: outputIndex, Item: item,
+	}
+}
+
+// ResponseContentPartAdded builds a response.content_part.added event, opening
+// the content slot that output_text deltas are appended to.
+func ResponseContentPartAdded(mid string, outputIndex, contentIndex int) any {
+	return contentPartEvent{
+		Type: "response.content_part.added", ItemID: mid,
+		OutputIndex: outputIndex, ContentIndex: contentIndex,
+		Part: respContent{Type: "output_text", Text: "", Annotations: []any{}},
+	}
+}
+
+// ResponseContentPartDone builds a response.content_part.done event carrying the
+// final text for the content slot.
+func ResponseContentPartDone(mid string, outputIndex, contentIndex int, text string) any {
+	return contentPartEvent{
+		Type: "response.content_part.done", ItemID: mid,
+		OutputIndex: outputIndex, ContentIndex: contentIndex,
+		Part: respContent{Type: "output_text", Text: text, Annotations: []any{}},
+	}
+}
+
+// ResponseOutputTextDelta builds a response.output_text.delta event carrying one
+// chunk of assistant text.
+func ResponseOutputTextDelta(mid string, outputIndex, contentIndex int, delta string) any {
+	return outputTextDeltaEvent{
+		Type:   "response.output_text.delta",
+		ItemID: mid, OutputIndex: outputIndex, ContentIndex: contentIndex, Delta: delta,
+	}
+}
+
 // ResponseOutputTextDone builds a response.output_text.done event payload.
-func ResponseOutputTextDone(mid string, contentIndex int, text string) any {
+func ResponseOutputTextDone(mid string, outputIndex, contentIndex int, text string) any {
 	return outputTextDoneEvent{
 		Type:   "response.output_text.done",
-		ItemID: mid, ContentIndex: contentIndex, Text: text,
+		ItemID: mid, OutputIndex: outputIndex, ContentIndex: contentIndex, Text: text,
+	}
+}
+
+// StreamMessageItem builds the message output item used by the streaming item
+// lifecycle events. Status is in_progress for the added event and completed for
+// the done event; text is empty until the item closes.
+func StreamMessageItem(mid, text, status string) respOutputItem {
+	var content []respContent
+	if text != "" {
+		content = []respContent{{Type: "output_text", Text: text, Annotations: []any{}}}
+	}
+	return respOutputItem{
+		Type: "message", ID: mid, Role: "assistant", Status: status,
+		Content: content,
+	}
+}
+
+// StreamFunctionCallItem builds the function_call output item used by the
+// streaming item lifecycle events for a single tool call.
+func StreamFunctionCallItem(tc ToolCall, status string) respOutputItem {
+	return respOutputItem{
+		Type: "function_call", ID: tc.ID, CallID: tc.ID,
+		Name: tc.Function.Name, Arguments: tc.Function.Arguments, Status: status,
 	}
 }
 
@@ -276,8 +357,33 @@ type functionCallDoneEvent struct {
 type outputTextDoneEvent struct {
 	Type         string `json:"type"`
 	ItemID       string `json:"item_id"`
+	OutputIndex  int    `json:"output_index"`
 	ContentIndex int    `json:"content_index"`
 	Text         string `json:"text"`
+}
+
+type outputTextDeltaEvent struct {
+	Type         string `json:"type"`
+	ItemID       string `json:"item_id"`
+	OutputIndex  int    `json:"output_index"`
+	ContentIndex int    `json:"content_index"`
+	Delta        string `json:"delta"`
+}
+
+// outputItemEvent carries response.output_item.added/done.
+type outputItemEvent struct {
+	Type        string         `json:"type"`
+	OutputIndex int            `json:"output_index"`
+	Item        respOutputItem `json:"item"`
+}
+
+// contentPartEvent carries response.content_part.added/done.
+type contentPartEvent struct {
+	Type         string      `json:"type"`
+	ItemID       string      `json:"item_id"`
+	OutputIndex  int         `json:"output_index"`
+	ContentIndex int         `json:"content_index"`
+	Part         respContent `json:"part"`
 }
 
 // ─── Shared helpers ──────────────────────────────────────────────────────────
@@ -303,9 +409,17 @@ func ID(prefix string, n int) string {
 	return prefix + hexToken(n)
 }
 
-// ApproxTokens estimates a token count as len/4, matching the reference.
+// ApproxTokens estimates a token count as len/4, matching the reference. Any
+// non-empty string counts as at least one token: integer division alone reports 0
+// for short replies like "OK", which downstream gateways record as zero usage.
 func ApproxTokens(s string) int {
-	return len([]rune(s)) / 4
+	if len(s) == 0 {
+		return 0
+	}
+	if n := len([]rune(s)) / 4; n > 0 {
+		return n
+	}
+	return 1
 }
 
 // contentPtr returns a pointer to text, or nil when empty (so JSON emits null).

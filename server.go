@@ -302,21 +302,34 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			sendError(w, http.StatusInternalServerError, "streaming unsupported")
 			return
 		}
+		// Streaming clients (Codex, the OpenAI SDK) track output items and content
+		// parts as a state machine: an output_text.delta is only applied if an
+		// output_item.added/content_part.added pair has already opened the slot it
+		// targets. Emitting a bare delta makes those clients drop the text and
+		// render an empty turn, so the full item lifecycle is sent here. The
+		// output_index values must match the item order in responsesOutput: one
+		// index per tool call, then the message item.
 		writeSSEEvent(w, f, "response.created", apiconv.ResponseCreated(rid, m.Name))
-		for _, tc := range toolCalls {
+		writeSSEEvent(w, f, "response.in_progress", apiconv.ResponseInProgress(rid, m.Name))
+		for i, tc := range toolCalls {
+			writeSSEEvent(w, f, "response.output_item.added",
+				apiconv.ResponseOutputItemAdded(i, apiconv.StreamFunctionCallItem(tc, "in_progress")))
 			writeSSEEvent(w, f, "response.function_call_arguments.done", apiconv.ResponseFunctionCallDone(tc))
+			writeSSEEvent(w, f, "response.output_item.done",
+				apiconv.ResponseOutputItemDone(i, apiconv.StreamFunctionCallItem(tc, "completed")))
 		}
 		if text != "" || len(toolCalls) == 0 {
+			idx := len(toolCalls)
+			writeSSEEvent(w, f, "response.output_item.added",
+				apiconv.ResponseOutputItemAdded(idx, apiconv.StreamMessageItem(mid, "", "in_progress")))
+			writeSSEEvent(w, f, "response.content_part.added", apiconv.ResponseContentPartAdded(mid, idx, 0))
 			if text != "" {
-				writeSSEEvent(w, f, "response.output_text.delta", map[string]any{
-					"type": "response.output_text.delta",
-					"item_id": mid,
-					"output_index": 0,
-					"content_index": 0,
-					"delta": text,
-				})
+				writeSSEEvent(w, f, "response.output_text.delta", apiconv.ResponseOutputTextDelta(mid, idx, 0, text))
 			}
-			writeSSEEvent(w, f, "response.output_text.done", apiconv.ResponseOutputTextDone(mid, 0, text))
+			writeSSEEvent(w, f, "response.output_text.done", apiconv.ResponseOutputTextDone(mid, idx, 0, text))
+			writeSSEEvent(w, f, "response.content_part.done", apiconv.ResponseContentPartDone(mid, idx, 0, text))
+			writeSSEEvent(w, f, "response.output_item.done",
+				apiconv.ResponseOutputItemDone(idx, apiconv.StreamMessageItem(mid, text, "completed")))
 		}
 		writeSSEEvent(w, f, "response.completed", apiconv.ResponseCompleted(rid, mid, m.Name, prompt, text, toolCalls))
 		return
