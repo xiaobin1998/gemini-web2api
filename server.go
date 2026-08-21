@@ -307,6 +307,15 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			writeSSEEvent(w, f, "response.function_call_arguments.done", apiconv.ResponseFunctionCallDone(tc))
 		}
 		if text != "" || len(toolCalls) == 0 {
+			if text != "" {
+				writeSSEEvent(w, f, "response.output_text.delta", map[string]any{
+					"type": "response.output_text.delta",
+					"item_id": mid,
+					"output_index": 0,
+					"content_index": 0,
+					"delta": text,
+				})
+			}
 			writeSSEEvent(w, f, "response.output_text.done", apiconv.ResponseOutputTextDone(mid, 0, text))
 		}
 		writeSSEEvent(w, f, "response.completed", apiconv.ResponseCompleted(rid, mid, m.Name, prompt, text, toolCalls))
