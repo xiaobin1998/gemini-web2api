@@ -1,0 +1,28 @@
+services:
+  gemini-web2api:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    image: xiaobin1998/gemini-web2api:local
+    container_name: gemini-web2api
+    restart: always
+    environment:
+      GEMINI_LISTEN: "0.0.0.0:8081"
+      GEMINI_COOKIE_FILE: "/run/secrets/gemini-cookie.txt"
+      GEMINI_API_KEYS: "${GEMINI_API_KEYS:?set in server env}"
+      GEMINI_DEFAULT_MODEL: "gemini-3.1-pro"
+      GEMINI_COOKIE_REFRESH_MIN: "9"
+      GEMINI_LOG_REQUESTS: "false"
+      GEMINI_PROXY: "http://mihomo:7890"
+    volumes:
+      - ./secrets/gemini-cookie.txt:/run/secrets/gemini-cookie.txt:ro
+    networks:
+      - 1panel-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8081/ | grep -q ."]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+networks:
+  1panel-network:
+    external: true
